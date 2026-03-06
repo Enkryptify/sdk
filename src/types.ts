@@ -1,11 +1,11 @@
 export interface EnkryptifyConfig {
-  apiKey: string;
-  workspaceId: string;
-  projectId: string;
-  environment: string;
+    apiKey: string;
+    workspaceId: string;
+    projectId: string;
+    environment: string;
 }
 
 export interface Secret {
-  key: string;
-  value: string;
+    key: string;
+    value: string;
 }
