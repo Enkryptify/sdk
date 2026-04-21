@@ -9,5 +9,18 @@ export {
     RateLimitError,
     ApiError,
     KubernetesAuthError,
+    ProxyError,
+    ProxyValidationError,
 } from "@/errors";
-export type { IEnkryptify, EnkryptifyConfig, EnkryptifyAuthProvider, KubernetesAuthOptions } from "@/types";
+export type {
+    IEnkryptify,
+    IEnkryptifyProxy,
+    EnkryptifyConfig,
+    EnkryptifyAuthProvider,
+    KubernetesAuthOptions,
+    ProxyConfig,
+    ProxyMethod,
+    ProxyRequestInit,
+    ProxyRequestOptions,
+    JsonValue,
+} from "@/types";

@@ -130,6 +130,84 @@ Destroy the client when you're done to clear all cached secrets from memory:
 client.destroy();
 ```
 
+## Proxy
+
+The Enkryptify proxy lets your code call upstream APIs without the secret values ever touching your process. Write `%VARIABLE_NAME%` placeholders in the URL, headers, or body, and Enkryptify substitutes them server-side before forwarding the request.
+
+### Basic Usage (fetch-compatible)
+
+```typescript
+const res = await client.proxy.fetch("https://api.stripe.com/v1/charges", {
+    method: "POST",
+    headers: { Authorization: "Bearer %STRIPE_SECRET%" },
+    body: JSON.stringify({ amount: 1000, currency: "usd" }),
+});
+const charge = await res.json();
+```
+
+`client.proxy.fetch` returns a standard `Response` — call `.json()`, `.text()`, `.arrayBuffer()`, etc. as needed.
+
+### Wiring into axios, ky, or other HTTP clients
+
+Because `client.proxy.fetch` matches the native `fetch` signature, any client that accepts a custom `fetch` implementation or fetch adapter will work:
+
+```typescript
+// axios (1.7+)
+import axios from "axios";
+const api = axios.create({ adapter: "fetch", fetch: client.proxy.fetch });
+const res = await api.get("https://api.upstream.com/x?key=%API_KEY%");
+
+// ky
+import ky from "ky";
+const api = ky.extend({ fetch: client.proxy.fetch });
+const data = await api.get("https://api.upstream.com/x?key=%API_KEY%").json();
+```
+
+### Low-level Request API
+
+Prefer `client.proxy.request` when writing new code — it takes a typed JSON body directly and skips the fetch-init translation:
+
+```typescript
+const res = await client.proxy.request({
+    url: "https://api.upstream.com/x",
+    method: "POST",
+    headers: { "X-Auth": "Bearer %TOKEN%" },
+    body: { user: "%USER_ID%" },
+    // Optional per-call overrides:
+    // environment: "other-env-id",
+    // usePersonal: false,
+});
+```
+
+### Proxy-Only Clients
+
+If your token has no permission to read secrets directly (proxy-gated access), set `proxy.proxyOnly` so that `.get()` / `.preload()` / `.getFromCache()` throw a clear error pointing users at the proxy:
+
+```typescript
+const client = new Enkryptify({
+    token: process.env.ENKRYPTIFY_TOKEN,
+    workspace: "demo",
+    project: "proxy",
+    environment: "env-id",
+    proxy: { proxyOnly: true },
+});
+
+// Throws: "This client is configured as proxy-only. Use client.proxy.fetch() or client.proxy.request() instead."
+await client.get("SOME_KEY");
+
+// Works as expected:
+await client.proxy.fetch("https://api.upstream.com/x?key=%SOME_KEY%");
+```
+
+### Body Restrictions
+
+The proxy operates on JSON payloads (so it can template `%VARIABLE%` placeholders). Non-JSON bodies throw with a clear message:
+
+- ✅ plain objects / arrays / primitives / `JSON.stringify`-ed strings
+- ❌ `FormData`, `Blob`, `ArrayBuffer`, typed arrays, `ReadableStream`, `URLSearchParams`
+
+GET and HEAD requests cannot include a body (matches the proxy contract).
+
 ## Configuration
 
 | Option                      | Type                                     | Default                        | Description                                      |
@@ -145,6 +223,17 @@ client.destroy();
 | `cache.ttl`                 | `number`                                 | `-1`                           | Cache TTL in ms (`-1` = never expire)            |
 | `cache.eager`               | `boolean`                                | `true`                         | Fetch all secrets on first `get()`               |
 | `logger.level`              | `"debug" \| "info" \| "warn" \| "error"` | `"info"`                       | Minimum log level                                |
+| `proxy.url`                 | `string`                                 | POC URL (overridable)          | Proxy service URL                                |
+| `proxy.proxyOnly`           | `boolean`                                | `false`                        | Disable direct secret access; require proxy      |
+
+### Environment Variables
+
+| Variable                | Description                                         |
+| ----------------------- | --------------------------------------------------- |
+| `ENKRYPTIFY_TOKEN`      | Auth token, used when no `token` / `auth` is passed |
+| `ENKRYPTIFY_API_URL`    | Overrides the default `baseUrl`                     |
+| `ENKRYPTIFY_PROXY_URL`  | Overrides the default proxy URL                     |
+| `ENKRYPTIFY_TOKEN_PATH` | Kubernetes service account token path               |
 
 ## API Reference
 
@@ -191,12 +280,18 @@ try {
 }
 ```
 
-| Error Class           | When                                            |
-| --------------------- | ----------------------------------------------- |
-| `EnkryptifyError`     | Base class for all SDK errors                   |
-| `SecretNotFoundError` | Secret key not found in the project/environment |
-| `AuthenticationError` | HTTP 401 or 403 from the API                    |
-| `ApiError`            | Any other non-OK HTTP response                  |
+| Error Class            | When                                                    |
+| ---------------------- | ------------------------------------------------------- |
+| `EnkryptifyError`      | Base class for all SDK errors                           |
+| `SecretNotFoundError`  | Secret key not found in the project/environment         |
+| `AuthenticationError`  | HTTP 401 from the API or proxy                          |
+| `AuthorizationError`   | HTTP 403 from the API or proxy                          |
+| `NotFoundError`        | HTTP 404 from the API (wrong workspace/project/env)     |
+| `RateLimitError`       | HTTP 429 (includes `retryAfter` in seconds)             |
+| `ApiError`             | Any other non-OK response from the secrets API          |
+| `ProxyError`           | Any non-OK, non-400 response from the proxy service     |
+| `ProxyValidationError` | HTTP 400 from the proxy (bad URL, method, body, config) |
+| `KubernetesAuthError`  | Kubernetes service account token read failed            |
 
 ## Development
 
