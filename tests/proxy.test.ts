@@ -469,7 +469,7 @@ describe("client.proxy — URL resolution", () => {
         const client = new Enkryptify(makeConfig({ proxy: undefined }));
         await client.proxy.fetch("https://upstream/x");
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy-poc-black.vercel.app");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.enkryptify.com");
     });
 });
 

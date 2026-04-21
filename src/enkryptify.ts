@@ -18,7 +18,7 @@ import { KubernetesExchangeManager } from "@/kubernetes-exchange";
 import { EnkryptifyProxy, sendProxyWire } from "@/proxy";
 import { HttpInterceptor } from "@/interceptor";
 
-const DEFAULT_PROXY_URL = "https://proxy-poc-black.vercel.app";
+const DEFAULT_PROXY_URL = "https://proxy.enkryptify.com";
 
 export class Enkryptify implements IEnkryptify {
     #api: EnkryptifyApi;
