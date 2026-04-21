@@ -1,0 +1,279 @@
+import type {
+    EnkryptifyAuthProvider,
+    IEnkryptifyProxy,
+    JsonValue,
+    ProxyMethod,
+    ProxyRequestInit,
+    ProxyRequestOptions,
+    TokenExchange,
+} from "@/types";
+import { EnkryptifyError } from "@/errors";
+import type { Logger } from "@/logger";
+import { retrieveToken } from "@/internal/token-store";
+
+const ALLOWED_METHODS: readonly ProxyMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+
+export interface EnkryptifyProxyInit {
+    proxyUrl: string;
+    auth: EnkryptifyAuthProvider;
+    tokenExchange: TokenExchange | null;
+    workspace: string;
+    project: string;
+    environment: string;
+    usePersonalValues: boolean;
+    logger: Logger;
+    isDestroyed: () => boolean;
+}
+
+interface ProxyWireBody {
+    url: string;
+    method: ProxyMethod;
+    headers?: Record<string, string>;
+    body?: JsonValue;
+    config: {
+        workspace: string;
+        project: string;
+        "environment-id": string;
+        "is-personal": boolean;
+    };
+}
+
+export class EnkryptifyProxy implements IEnkryptifyProxy {
+    #proxyUrl: string;
+    #auth: EnkryptifyAuthProvider;
+    #tokenExchange: TokenExchange | null;
+    #workspace: string;
+    #project: string;
+    #environment: string;
+    #usePersonalValues: boolean;
+    #logger: Logger;
+    #isDestroyed: () => boolean;
+
+    // Public-surface methods — rebound in the constructor so that
+    // `const { fetch } = client.proxy` (the pattern users need for wiring into
+    // axios's `fetch` option or ky's `fetch`) keeps working.
+    fetch: (input: string | URL, init?: ProxyRequestInit) => Promise<Response>;
+    request: (options: ProxyRequestOptions) => Promise<Response>;
+
+    constructor(init: EnkryptifyProxyInit) {
+        this.#proxyUrl = init.proxyUrl;
+        this.#auth = init.auth;
+        this.#tokenExchange = init.tokenExchange;
+        this.#workspace = init.workspace;
+        this.#project = init.project;
+        this.#environment = init.environment;
+        this.#usePersonalValues = init.usePersonalValues;
+        this.#logger = init.logger;
+        this.#isDestroyed = init.isDestroyed;
+
+        this.fetch = this.#fetchImpl.bind(this);
+        this.request = this.#requestImpl.bind(this);
+    }
+
+    async #fetchImpl(input: string | URL, init?: ProxyRequestInit): Promise<Response> {
+        if (typeof Request !== "undefined" && input instanceof Request) {
+            throw new EnkryptifyError(
+                "client.proxy.fetch does not accept Request objects. Pass a URL string or URL instance instead.\n" +
+                    "Docs: https://docs.enkryptify.com/sdk/proxy",
+            );
+        }
+
+        const url = typeof input === "string" ? input : String(input);
+
+        const method = normalizeMethod(init?.method);
+        const headers = normalizeHeaders(init?.headers);
+        const body = parseFetchBody(init?.body);
+
+        if ((method === "GET" || method === "HEAD") && body !== undefined) {
+            throw new EnkryptifyError(
+                `${method} requests cannot include a body. Remove the body or change the method.\n` +
+                    "Docs: https://docs.enkryptify.com/sdk/proxy",
+            );
+        }
+
+        return this.#send(
+            {
+                url,
+                method,
+                headers,
+                body,
+                config: this.#buildConfig(),
+            },
+            init?.signal ?? null,
+        );
+    }
+
+    async #requestImpl(options: ProxyRequestOptions): Promise<Response> {
+        if (!options.url) {
+            throw new EnkryptifyError("Proxy request requires a non-empty `url`.");
+        }
+        if (!options.method) {
+            throw new EnkryptifyError("Proxy request requires a `method`.");
+        }
+
+        const method = normalizeMethod(options.method);
+
+        if ((method === "GET" || method === "HEAD") && options.body !== undefined) {
+            throw new EnkryptifyError(
+                `${method} requests cannot include a body. Remove the body or change the method.\n` +
+                    "Docs: https://docs.enkryptify.com/sdk/proxy",
+            );
+        }
+
+        const config = this.#buildConfig({
+            workspace: options.workspace,
+            project: options.project,
+            environment: options.environment,
+            usePersonal: options.usePersonal,
+        });
+
+        return this.#send(
+            {
+                url: options.url,
+                method,
+                headers: options.headers,
+                body: options.body,
+                config,
+            },
+            null,
+        );
+    }
+
+    #buildConfig(overrides?: {
+        workspace?: string;
+        project?: string;
+        environment?: string;
+        usePersonal?: boolean;
+    }): ProxyWireBody["config"] {
+        return {
+            workspace: overrides?.workspace ?? this.#workspace,
+            project: overrides?.project ?? this.#project,
+            "environment-id": overrides?.environment ?? this.#environment,
+            "is-personal": overrides?.usePersonal ?? this.#usePersonalValues,
+        };
+    }
+
+    async #send(body: ProxyWireBody, signal: AbortSignal | null): Promise<Response> {
+        if (this.#isDestroyed()) {
+            throw new EnkryptifyError(
+                "This Enkryptify client has been destroyed. Create a new instance to continue.\n" +
+                    "Docs: https://docs.enkryptify.com/sdk/lifecycle",
+            );
+        }
+
+        await this.#tokenExchange?.ensureToken();
+
+        const token = retrieveToken(this.#auth);
+
+        // Strip undefined fields from the wire body so we don't send `"body": null`
+        // when the user didn't specify one.
+        const wireBody: Record<string, unknown> = {
+            url: body.url,
+            method: body.method,
+            config: body.config,
+        };
+        if (body.headers !== undefined) wireBody.headers = body.headers;
+        if (body.body !== undefined) wireBody.body = body.body;
+
+        this.#logger.debug(`Proxy request: ${body.method} ${body.url}`);
+        const start = Date.now();
+
+        const response = await fetch(this.#proxyUrl, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(wireBody),
+            signal,
+        });
+
+        this.#logger.debug(`Proxy responded with HTTP ${response.status} in ${Date.now() - start}ms`);
+
+        // Return the Response verbatim — whatever status, body, and headers it carries.
+        //
+        // The Proxy forwards upstream responses unchanged (2xx or not), so mapping status
+        // codes to typed errors here is fundamentally unsafe: an upstream 401 from the
+        // caller's target API (e.g. OpenWeatherMap rejecting its own API key) is
+        // indistinguishable on the wire from a proxy 401 (e.g. Enkryptify token expired),
+        // and translating both into AuthenticationError produced wrong, misleading errors.
+        //
+        // Callers handle non-2xx like native fetch: check `response.ok` / `response.status`
+        // and read the body. Proxy-layer errors are delivered as `{error: {code, message}}`
+        // JSON bodies that callers can parse for specifics.
+        return response;
+    }
+}
+
+function normalizeMethod(method?: string): ProxyMethod {
+    const upper = (method ?? "GET").toUpperCase();
+    if (!ALLOWED_METHODS.includes(upper as ProxyMethod)) {
+        throw new EnkryptifyError(
+            `Unsupported HTTP method "${method}". Supported methods: ${ALLOWED_METHODS.join(", ")}.`,
+        );
+    }
+    return upper as ProxyMethod;
+}
+
+function normalizeHeaders(input: HeadersInit | undefined): Record<string, string> | undefined {
+    if (input === undefined) return undefined;
+
+    const out: Record<string, string> = {};
+    const headers = new Headers(input);
+    headers.forEach((value, key) => {
+        out[key] = value;
+    });
+
+    // If the input was empty, return undefined to avoid sending `"headers": {}`.
+    return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function parseFetchBody(body: BodyInit | JsonValue | null | undefined): JsonValue | undefined {
+    if (body === undefined || body === null) return undefined;
+
+    // Reject binary / form / stream body types — the proxy substitutes
+    // %VARIABLE% placeholders which only makes sense for JSON-encoded payloads.
+    if (typeof Blob !== "undefined" && body instanceof Blob) {
+        throw bodyTypeError("Blob");
+    }
+    if (typeof FormData !== "undefined" && body instanceof FormData) {
+        throw bodyTypeError("FormData");
+    }
+    if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+        throw bodyTypeError("URLSearchParams");
+    }
+    if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) {
+        throw bodyTypeError("ReadableStream");
+    }
+    if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer) {
+        throw bodyTypeError("ArrayBuffer");
+    }
+    if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(body as ArrayBufferView)) {
+        throw bodyTypeError("typed array");
+    }
+
+    // Treat strings as JSON — this is what axios/ky/etc. produce after their
+    // internal JSON.stringify step.
+    if (typeof body === "string") {
+        try {
+            return JSON.parse(body) as JsonValue;
+        } catch {
+            throw new EnkryptifyError(
+                "Proxy body must be JSON-serializable. Received a non-JSON string; " +
+                    "pass an object/array/primitive directly or JSON.stringify first.\n" +
+                    "Docs: https://docs.enkryptify.com/sdk/proxy",
+            );
+        }
+    }
+
+    // Already a JSON-serializable value (plain object, array, number, boolean)
+    return body as JsonValue;
+}
+
+function bodyTypeError(typeName: string): EnkryptifyError {
+    return new EnkryptifyError(
+        `Proxy only accepts JSON-compatible bodies. Received a ${typeName}. ` +
+            "Convert the value to a JSON-serializable object/string before calling the proxy.\n" +
+            "Docs: https://docs.enkryptify.com/sdk/proxy",
+    );
+}

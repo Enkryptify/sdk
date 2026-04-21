@@ -2,6 +2,7 @@ import type {
     EnkryptifyAuthProvider,
     EnkryptifyConfig,
     IEnkryptify,
+    IEnkryptifyProxy,
     KubernetesAuthOptions,
     Secret,
     TokenExchange,
@@ -14,6 +15,9 @@ import { Logger } from "@/logger";
 import { retrieveToken } from "@/internal/token-store";
 import { TokenExchangeManager } from "@/token-exchange";
 import { KubernetesExchangeManager } from "@/kubernetes-exchange";
+import { EnkryptifyProxy } from "@/proxy";
+
+const DEFAULT_PROXY_URL = "https://proxy-poc-black.vercel.app";
 
 export class Enkryptify implements IEnkryptify {
     #api: EnkryptifyApi;
@@ -29,6 +33,8 @@ export class Enkryptify implements IEnkryptify {
     #destroyed = false;
     #eagerLoaded = false;
     #tokenExchange: TokenExchange | null = null;
+    #proxy: EnkryptifyProxy;
+    #proxyOnly: boolean;
 
     constructor(config: EnkryptifyConfig) {
         if (!config.workspace) {
@@ -104,9 +110,28 @@ export class Enkryptify implements IEnkryptify {
             this.#tokenExchange = new TokenExchangeManager(baseUrl, staticToken, auth, this.#logger);
         }
 
+        const proxyUrl = config.proxy?.url ?? process.env.ENKRYPTIFY_PROXY_URL ?? DEFAULT_PROXY_URL;
+        this.#proxyOnly = config.proxy?.proxyOnly ?? false;
+        this.#proxy = new EnkryptifyProxy({
+            proxyUrl,
+            auth,
+            tokenExchange: this.#tokenExchange,
+            workspace: this.#workspace,
+            project: this.#project,
+            environment: this.#environment,
+            usePersonalValues: this.#usePersonalValues,
+            logger: this.#logger,
+            isDestroyed: () => this.#destroyed,
+        });
+
         this.#logger.info(
             `Initialized for workspace "${this.#workspace}", project "${this.#project}", environment "${this.#environment}"`,
         );
+    }
+
+    get proxy(): IEnkryptifyProxy {
+        this.#guardDestroyed();
+        return this.#proxy;
     }
 
     static fromEnv(): EnkryptifyAuthProvider {
@@ -137,6 +162,7 @@ export class Enkryptify implements IEnkryptify {
 
     async get(key: string, options?: { cache?: boolean }): Promise<string> {
         this.#guardDestroyed();
+        this.#guardProxyOnly();
 
         const useCache = this.#cacheEnabled && options?.cache !== false;
 
@@ -160,6 +186,7 @@ export class Enkryptify implements IEnkryptify {
 
     getFromCache(key: string): string {
         this.#guardDestroyed();
+        this.#guardProxyOnly();
 
         if (!this.#cacheEnabled || !this.#cache) {
             throw new EnkryptifyError(
@@ -178,6 +205,7 @@ export class Enkryptify implements IEnkryptify {
 
     async preload(): Promise<void> {
         this.#guardDestroyed();
+        this.#guardProxyOnly();
 
         if (!this.#cacheEnabled || !this.#cache) {
             throw new EnkryptifyError(
@@ -216,6 +244,16 @@ export class Enkryptify implements IEnkryptify {
             throw new EnkryptifyError(
                 "This Enkryptify client has been destroyed. Create a new instance to continue.\n" +
                     "Docs: https://docs.enkryptify.com/sdk/lifecycle",
+            );
+        }
+    }
+
+    #guardProxyOnly(): void {
+        if (this.#proxyOnly) {
+            throw new EnkryptifyError(
+                "This client is configured as proxy-only. Direct secret access is disabled. " +
+                    "Use client.proxy.fetch() or client.proxy.request() instead.\n" +
+                    "Docs: https://docs.enkryptify.com/sdk/proxy",
             );
         }
     }

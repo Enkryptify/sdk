@@ -86,3 +86,48 @@ export class ApiError extends EnkryptifyError {
         this.status = status;
     }
 }
+
+function formatDetail(detail: unknown): string {
+    if (detail === undefined || detail === null) return "";
+    if (typeof detail === "string") return detail;
+    try {
+        return JSON.stringify(detail);
+    } catch {
+        return String(detail);
+    }
+}
+
+export class ProxyError extends EnkryptifyError {
+    public readonly status: number;
+    public readonly detail?: unknown;
+
+    constructor(status: number, statusText: string, detail?: unknown) {
+        const detailStr = formatDetail(detail);
+        super(
+            `Proxy request failed (HTTP ${status}). ` +
+                `${statusText ? statusText + ". " : ""}` +
+                `${detailStr ? `Detail: ${detailStr}. ` : ""}` +
+                `This may be a temporary proxy issue — retry in a few moments.\n` +
+                `Docs: https://docs.enkryptify.com/sdk/proxy#errors`,
+        );
+        this.name = "ProxyError";
+        this.status = status;
+        this.detail = detail;
+    }
+}
+
+export class ProxyValidationError extends EnkryptifyError {
+    public readonly detail?: unknown;
+
+    constructor(detail?: unknown) {
+        const detailStr = formatDetail(detail);
+        super(
+            `Proxy rejected the request (HTTP 400). ` +
+                `${detailStr ? `Detail: ${detailStr}. ` : ""}` +
+                `Check your URL, method, headers, body, and proxy config.\n` +
+                `Docs: https://docs.enkryptify.com/sdk/proxy#errors`,
+        );
+        this.name = "ProxyValidationError";
+        this.detail = detail;
+    }
+}
