@@ -35,12 +35,10 @@ export interface ProxyWireBody {
     method: ProxyMethod;
     headers?: Record<string, string>;
     body?: JsonValue;
-    config: {
-        workspace: string;
-        project: string;
-        "environment-id": string;
-        "is-personal": boolean;
-    };
+    workspace: string;
+    project: string;
+    "environment-id": string;
+    "is-personal": boolean;
 }
 
 /**
@@ -82,15 +80,16 @@ export async function sendProxyWire(
     const wireBody: Record<string, unknown> = {
         url: body.url,
         method: body.method,
-        config: body.config,
+        "is-personal": body["is-personal"],
     };
     if (body.headers !== undefined) wireBody.headers = body.headers;
     if (body.body !== undefined) wireBody.body = body.body;
 
+    const proxyRequestUrl = buildProxyRequestUrl(ctx.proxyUrl, body.workspace, body.project, body["environment-id"]);
     ctx.logger.debug(`Proxy request: ${body.method} ${body.url}`);
     const start = Date.now();
 
-    const response = await fetch(ctx.proxyUrl, {
+    const response = await fetch(proxyRequestUrl, {
         method: "POST",
         headers: {
             Authorization: `Bearer ${token}`,
@@ -179,7 +178,7 @@ export class EnkryptifyProxy implements IEnkryptifyProxy {
                 method,
                 headers,
                 body,
-                config: this.#buildConfig(),
+                ...this.#buildScope(),
             },
             init?.signal ?? null,
         );
@@ -202,7 +201,7 @@ export class EnkryptifyProxy implements IEnkryptifyProxy {
             );
         }
 
-        const config = this.#buildConfig({
+        const scope = this.#buildScope({
             workspace: options.workspace,
             project: options.project,
             environment: options.environment,
@@ -216,18 +215,18 @@ export class EnkryptifyProxy implements IEnkryptifyProxy {
                 method,
                 headers: options.headers,
                 body: options.body,
-                config,
+                ...scope,
             },
             null,
         );
     }
 
-    #buildConfig(overrides?: {
+    #buildScope(overrides?: {
         workspace?: string;
         project?: string;
         environment?: string;
         usePersonal?: boolean;
-    }): ProxyWireBody["config"] {
+    }): Pick<ProxyWireBody, "workspace" | "project" | "environment-id" | "is-personal"> {
         return {
             workspace: overrides?.workspace ?? this.#workspace,
             project: overrides?.project ?? this.#project,
@@ -308,4 +307,9 @@ function bodyTypeError(typeName: string): EnkryptifyError {
             "Convert the value to a JSON-serializable object/string before calling the proxy.\n" +
             "Docs: https://docs.enkryptify.com/sdk/proxy",
     );
+}
+
+function buildProxyRequestUrl(baseUrl: string, workspace: string, project: string, environmentId: string): string {
+    const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+    return `${normalizedBaseUrl}/${encodeURIComponent(workspace)}/${encodeURIComponent(project)}/${encodeURIComponent(environmentId)}`;
 }

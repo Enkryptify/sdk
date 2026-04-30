@@ -47,7 +47,7 @@ describe("client.proxy.fetch — body translation", () => {
 
         expect(fetchMock).toHaveBeenCalledTimes(1);
         const url = fetchMock.mock.calls[0]?.[0] as string;
-        expect(url).toBe("https://proxy.test.com");
+        expect(url).toBe("https://proxy.test.com/ws-1/prj-1/env-1");
         const opts = fetchMock.mock.calls[0]?.[1] as RequestInit;
         expect(opts.method).toBe("POST");
 
@@ -55,12 +55,7 @@ describe("client.proxy.fetch — body translation", () => {
         expect(body).toMatchObject({
             url: "https://upstream/x?k=%K%",
             method: "GET",
-            config: {
-                workspace: "ws-1",
-                project: "prj-1",
-                "environment-id": "env-1",
-                "is-personal": true,
-            },
+            "is-personal": true,
         });
         expect(body.body).toBeUndefined();
         expect(body.headers).toBeUndefined();
@@ -211,7 +206,7 @@ describe("client.proxy.fetch — body translation", () => {
 });
 
 describe("client.proxy.request — low-level API", () => {
-    it("sends exact config in kebab-case", async () => {
+    it("sends wire body and routes context in URL path", async () => {
         fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
         const client = new Enkryptify(makeConfig());
 
@@ -226,13 +221,9 @@ describe("client.proxy.request — low-level API", () => {
             url: "https://upstream/x",
             method: "POST",
             body: { foo: "%BAR%" },
-            config: {
-                workspace: "ws-1",
-                project: "prj-1",
-                "environment-id": "env-1",
-                "is-personal": true,
-            },
+            "is-personal": true,
         });
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/ws-1/prj-1/env-1");
     });
 
     it("applies per-call environment override", async () => {
@@ -245,8 +236,7 @@ describe("client.proxy.request — low-level API", () => {
             environment: "other-env",
         });
 
-        const body = getCallBody(fetchMock.mock.calls[0] as unknown[]);
-        expect((body.config as Record<string, unknown>)["environment-id"]).toBe("other-env");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/ws-1/prj-1/other-env");
     });
 
     it("applies per-call workspace/project/usePersonal overrides", async () => {
@@ -262,12 +252,8 @@ describe("client.proxy.request — low-level API", () => {
         });
 
         const body = getCallBody(fetchMock.mock.calls[0] as unknown[]);
-        expect(body.config).toEqual({
-            workspace: "other-ws",
-            project: "other-prj",
-            "environment-id": "env-1",
-            "is-personal": false,
-        });
+        expect(body["is-personal"]).toBe(false);
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/other-ws/other-prj/env-1");
     });
 
     it("rejects GET with body", async () => {
@@ -449,7 +435,7 @@ describe("client.proxy — URL resolution", () => {
         const client = new Enkryptify(makeConfig({ proxy: { url: "https://config.test.com" } }));
         await client.proxy.fetch("https://upstream/x");
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://config.test.com");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://config.test.com/ws-1/prj-1/env-1");
     });
 
     it("falls back to ENKRYPTIFY_PROXY_URL env var", async () => {
@@ -459,7 +445,7 @@ describe("client.proxy — URL resolution", () => {
         const client = new Enkryptify(makeConfig({ proxy: undefined }));
         await client.proxy.fetch("https://upstream/x");
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://env.test.com");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://env.test.com/ws-1/prj-1/env-1");
     });
 
     it("falls back to default POC URL when nothing else is set", async () => {
@@ -469,7 +455,7 @@ describe("client.proxy — URL resolution", () => {
         const client = new Enkryptify(makeConfig({ proxy: undefined }));
         await client.proxy.fetch("https://upstream/x");
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.enkryptify.com");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.enkryptify.com/ws-1/prj-1/env-1");
     });
 });
 
