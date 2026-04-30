@@ -47,7 +47,7 @@ describe("client.proxy.fetch — body translation", () => {
 
         expect(fetchMock).toHaveBeenCalledTimes(1);
         const url = fetchMock.mock.calls[0]?.[0] as string;
-        expect(url).toBe("https://proxy.test.com/ws-1/prj-1/env-1");
+        expect(url).toBe("https://proxy.test.com/v1/proxy/ws-1/prj-1/env-1");
         const opts = fetchMock.mock.calls[0]?.[1] as RequestInit;
         expect(opts.method).toBe("POST");
 
