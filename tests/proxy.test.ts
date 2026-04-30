@@ -17,7 +17,7 @@ function makeConfig(overrides?: Partial<EnkryptifyConfig>): EnkryptifyConfig {
         environment: "env-1",
         baseUrl: "https://api.test.com",
         logger: { level: "error" },
-        proxy: { url: "https://proxy.test.com" },
+        proxy: { url: "https://proxy.test.com/v1/proxy" },
         ...overrides,
     };
 }
@@ -221,7 +221,7 @@ describe("client.proxy.request — low-level API", () => {
             method: "POST",
             body: { foo: "%BAR%" },
         });
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/ws-1/prj-1/env-1");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/v1/proxy/ws-1/prj-1/env-1");
     });
 
     it("applies per-call environment override", async () => {
@@ -234,7 +234,7 @@ describe("client.proxy.request — low-level API", () => {
             environment: "other-env",
         });
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/ws-1/prj-1/other-env");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/v1/proxy/ws-1/prj-1/other-env");
     });
 
     it("applies per-call workspace/project overrides", async () => {
@@ -248,7 +248,7 @@ describe("client.proxy.request — low-level API", () => {
             project: "other-prj",
         });
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/other-ws/other-prj/env-1");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/v1/proxy/other-ws/other-prj/env-1");
     });
 
     it("rejects GET with body", async () => {
@@ -450,7 +450,7 @@ describe("client.proxy — URL resolution", () => {
         const client = new Enkryptify(makeConfig({ proxy: undefined }));
         await client.proxy.fetch("https://upstream/x");
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.enkryptify.com/ws-1/prj-1/env-1");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.enkryptify.com/v1/proxy/ws-1/prj-1/env-1");
     });
 });
 
