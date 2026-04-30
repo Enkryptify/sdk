@@ -18,7 +18,7 @@ import { KubernetesExchangeManager } from "@/kubernetes-exchange";
 import { EnkryptifyProxy, sendProxyWire } from "@/proxy";
 import { HttpInterceptor } from "@/interceptor";
 
-const DEFAULT_PROXY_URL = "https://proxy.enkryptify.com/v1/proxy";
+const DEFAULT_PROXY_URL = "https://proxy.enkryptify.com";
 
 export class Enkryptify implements IEnkryptify {
     #api: EnkryptifyApi;
@@ -121,6 +121,7 @@ export class Enkryptify implements IEnkryptify {
             workspace: this.#workspace,
             project: this.#project,
             environment: this.#environment,
+            usePersonalValues: this.#usePersonalValues,
             logger: this.#logger,
             isDestroyed: () => this.#destroyed,
         });
@@ -139,6 +140,7 @@ export class Enkryptify implements IEnkryptify {
                     workspace: this.#workspace,
                     project: this.#project,
                     environment: this.#environment,
+                    usePersonalValues: this.#usePersonalValues,
                 },
                 logger: this.#logger,
             });

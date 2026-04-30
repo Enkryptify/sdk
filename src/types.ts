@@ -163,6 +163,8 @@ export interface ProxyRequestOptions {
     project?: string;
     /** Override the client's environment for this request. */
     environment?: string;
+    /** Override the client's `usePersonalValues` setting for this request. */
+    usePersonal?: boolean;
 }
 
 export interface IEnkryptifyProxy {
@@ -248,6 +250,8 @@ export interface InterceptorRule {
     project?: string;
     /** Override the client's environment for this rule. */
     environment?: string;
+    /** Override the client's `usePersonalValues` setting for this rule. */
+    usePersonal?: boolean;
 
     /**
      * How to handle intercepted requests whose body cannot be represented on

@@ -20,6 +20,7 @@ export interface EnkryptifyProxyInit {
     workspace: string;
     project: string;
     environment: string;
+    usePersonalValues: boolean;
     logger: Logger;
     isDestroyed: () => boolean;
 }
@@ -37,6 +38,7 @@ export interface ProxyWireBody {
     workspace: string;
     project: string;
     "environment-id": string;
+    "is-personal": boolean;
 }
 
 /**
@@ -78,6 +80,7 @@ export async function sendProxyWire(
     const wireBody: Record<string, unknown> = {
         url: body.url,
         method: body.method,
+        "is-personal": body["is-personal"],
     };
     if (body.headers !== undefined) wireBody.headers = body.headers;
     if (body.body !== undefined) wireBody.body = body.body;
@@ -117,6 +120,7 @@ export class EnkryptifyProxy implements IEnkryptifyProxy {
     #workspace: string;
     #project: string;
     #environment: string;
+    #usePersonalValues: boolean;
 
     // Public-surface methods — rebound in the constructor so that
     // `const { fetch } = client.proxy` (the pattern users need for wiring into
@@ -135,6 +139,7 @@ export class EnkryptifyProxy implements IEnkryptifyProxy {
         this.#workspace = init.workspace;
         this.#project = init.project;
         this.#environment = init.environment;
+        this.#usePersonalValues = init.usePersonalValues;
 
         this.fetch = this.#fetchImpl.bind(this);
         this.request = this.#requestImpl.bind(this);
@@ -200,6 +205,7 @@ export class EnkryptifyProxy implements IEnkryptifyProxy {
             workspace: options.workspace,
             project: options.project,
             environment: options.environment,
+            usePersonal: options.usePersonal,
         });
 
         return sendProxyWire(
@@ -219,11 +225,13 @@ export class EnkryptifyProxy implements IEnkryptifyProxy {
         workspace?: string;
         project?: string;
         environment?: string;
-    }): Pick<ProxyWireBody, "workspace" | "project" | "environment-id"> {
+        usePersonal?: boolean;
+    }): Pick<ProxyWireBody, "workspace" | "project" | "environment-id" | "is-personal"> {
         return {
             workspace: overrides?.workspace ?? this.#workspace,
             project: overrides?.project ?? this.#project,
             "environment-id": overrides?.environment ?? this.#environment,
+            "is-personal": overrides?.usePersonal ?? this.#usePersonalValues,
         };
     }
 }

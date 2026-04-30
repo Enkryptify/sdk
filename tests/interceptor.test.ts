@@ -377,12 +377,13 @@ describe("interceptor — ProxyWireBody shape", () => {
 
         await fetch("https://api.example.com/v1");
 
-        await findProxyCall(fetchMock);
+        const wire = await findProxyCall(fetchMock);
+        expect(wire?.["is-personal"]).toBe(false);
         const proxyCall = await findCallByUrlPrefix(fetchMock, "https://proxy.test.com/");
         expect(proxyCall?.url).toBe("https://proxy.test.com/ws-x/prj-y/env-z");
     });
 
-    it("rule-level workspace/project/environment override defaults", async () => {
+    it("rule-level workspace/project/environment/usePersonal override defaults", async () => {
         fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
 
         activeClient = new Enkryptify(
@@ -395,6 +396,7 @@ describe("interceptor — ProxyWireBody shape", () => {
                             workspace: "override-ws",
                             project: "override-prj",
                             environment: "override-env",
+                            usePersonal: false,
                         },
                     ],
                 },
@@ -404,7 +406,8 @@ describe("interceptor — ProxyWireBody shape", () => {
 
         await fetch("https://api.example.com/v1");
 
-        await findProxyCall(fetchMock);
+        const wire = await findProxyCall(fetchMock);
+        expect(wire?.["is-personal"]).toBe(false);
         const proxyCall = await findCallByUrlPrefix(fetchMock, "https://proxy.test.com/");
         expect(proxyCall?.url).toBe("https://proxy.test.com/override-ws/override-prj/override-env");
     });
