@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Enkryptify, EnkryptifyError } from "@/index";
+import {
+    AuthenticationError,
+    AuthorizationError,
+    Enkryptify,
+    EnkryptifyError,
+    ProxyError,
+    ProxyValidationError,
+    RateLimitError,
+} from "@/index";
 import { storeToken } from "@/internal/token-store";
 import type { EnkryptifyAuthProvider, EnkryptifyConfig } from "@/types";
 
@@ -7,6 +15,22 @@ function createAuth(token = "ek_test"): EnkryptifyAuthProvider {
     const auth = { _brand: "EnkryptifyAuthProvider" as const };
     storeToken(auth, token);
     return auth;
+}
+
+/**
+ * Build the response shape the real Enkryptify proxy returns on success:
+ * HTTP 200 wrapping the upstream status/headers/body in a JSON envelope.
+ */
+function envelope(body: unknown = {}, upstreamStatus = 200, upstreamHeaders: Record<string, string> = {}): Response {
+    return new Response(JSON.stringify({ status: upstreamStatus, headers: upstreamHeaders, body }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+    });
+}
+
+/** Default no-op proxy success response used by tests that only care about the wire body. */
+function okEnvelope(): Response {
+    return envelope({}, 200, {});
 }
 
 function makeConfig(overrides?: Partial<EnkryptifyConfig>): EnkryptifyConfig {
@@ -40,14 +64,14 @@ afterEach(() => {
 
 describe("client.proxy.fetch — body translation", () => {
     it("GET without body sends correct wire body", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         await client.proxy.fetch("https://upstream/x?k=%K%");
 
         expect(fetchMock).toHaveBeenCalledTimes(1);
         const url = fetchMock.mock.calls[0]?.[0] as string;
-        expect(url).toBe("https://proxy.test.com");
+        expect(url).toBe("https://proxy.test.com/ws-1/prj-1/env-1");
         const opts = fetchMock.mock.calls[0]?.[1] as RequestInit;
         expect(opts.method).toBe("POST");
 
@@ -55,19 +79,14 @@ describe("client.proxy.fetch — body translation", () => {
         expect(body).toMatchObject({
             url: "https://upstream/x?k=%K%",
             method: "GET",
-            config: {
-                workspace: "ws-1",
-                project: "prj-1",
-                "environment-id": "env-1",
-                "is-personal": true,
-            },
+            "is-personal": true,
         });
         expect(body.body).toBeUndefined();
         expect(body.headers).toBeUndefined();
     });
 
     it("POST with JSON string body parses to object in wire body", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         await client.proxy.fetch("https://upstream/x", {
@@ -80,7 +99,7 @@ describe("client.proxy.fetch — body translation", () => {
     });
 
     it("POST with plain object body passes through", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         // Cast needed because RequestInit.body doesn't include plain objects
@@ -163,7 +182,7 @@ describe("client.proxy.fetch — body translation", () => {
     });
 
     it("coerces URL object input to string", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         await client.proxy.fetch(new URL("https://upstream/x?a=1"));
@@ -173,7 +192,7 @@ describe("client.proxy.fetch — body translation", () => {
     });
 
     it("normalizes headers from Headers object", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         await client.proxy.fetch("https://upstream/x", {
@@ -190,7 +209,7 @@ describe("client.proxy.fetch — body translation", () => {
     });
 
     it("defaults method to GET when init omitted", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         await client.proxy.fetch("https://upstream/x");
@@ -200,7 +219,7 @@ describe("client.proxy.fetch — body translation", () => {
     });
 
     it("uppercases lowercase method", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         await client.proxy.fetch("https://upstream/x", { method: "post", body: "{}" });
@@ -211,8 +230,8 @@ describe("client.proxy.fetch — body translation", () => {
 });
 
 describe("client.proxy.request — low-level API", () => {
-    it("sends exact config in kebab-case", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+    it("sends wire body and routes context in URL path", async () => {
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         await client.proxy.request({
@@ -226,17 +245,13 @@ describe("client.proxy.request — low-level API", () => {
             url: "https://upstream/x",
             method: "POST",
             body: { foo: "%BAR%" },
-            config: {
-                workspace: "ws-1",
-                project: "prj-1",
-                "environment-id": "env-1",
-                "is-personal": true,
-            },
+            "is-personal": true,
         });
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/ws-1/prj-1/env-1");
     });
 
     it("applies per-call environment override", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         await client.proxy.request({
@@ -245,12 +260,11 @@ describe("client.proxy.request — low-level API", () => {
             environment: "other-env",
         });
 
-        const body = getCallBody(fetchMock.mock.calls[0] as unknown[]);
-        expect((body.config as Record<string, unknown>)["environment-id"]).toBe("other-env");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/ws-1/prj-1/other-env");
     });
 
     it("applies per-call workspace/project/usePersonal overrides", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         await client.proxy.request({
@@ -262,12 +276,8 @@ describe("client.proxy.request — low-level API", () => {
         });
 
         const body = getCallBody(fetchMock.mock.calls[0] as unknown[]);
-        expect(body.config).toEqual({
-            workspace: "other-ws",
-            project: "other-prj",
-            "environment-id": "env-1",
-            "is-personal": false,
-        });
+        expect(body["is-personal"]).toBe(false);
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.test.com/other-ws/other-prj/env-1");
     });
 
     it("rejects GET with body", async () => {
@@ -291,7 +301,7 @@ describe("client.proxy.request — low-level API", () => {
 
 describe("client.proxy — authorization", () => {
     it("sends Authorization: Bearer <token>", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig({ auth: createAuth("my-proxy-token") }));
 
         await client.proxy.fetch("https://upstream/x");
@@ -312,7 +322,7 @@ describe("client.proxy — authorization", () => {
                     }),
                 );
             }
-            return Promise.resolve(new Response("{}", { status: 200 }));
+            return Promise.resolve(okEnvelope());
         });
 
         const client = new Enkryptify(
@@ -337,44 +347,33 @@ describe("client.proxy — authorization", () => {
     });
 });
 
-describe("client.proxy — response passthrough", () => {
-    // client.proxy.fetch is a fetch-style API: it returns whatever the Proxy returned
-    // (which for success is the upstream's verbatim Response, and for proxy-layer
-    // errors is a `{error: {code, message}}` JSON envelope). No status-based throwing —
-    // that produced wrong errors when the upstream itself returned 401/403/etc.
+describe("client.proxy — envelope unwrap (upstream response)", () => {
+    // The proxy returns `{ status, headers, body }` wrapped in an HTTP 200.
+    // The SDK unwraps that envelope into a `Response` whose status/headers/body
+    // mirror what the upstream API itself produced.
 
-    it("returns the upstream Response on 2xx and body is readable", async () => {
+    it("returns the upstream body on 2xx and body is readable", async () => {
         const payload = { hello: "world" };
-        fetchMock.mockResolvedValue(
-            new Response(JSON.stringify(payload), {
-                status: 200,
-                headers: new Headers({ "Content-Type": "application/json" }),
-            }),
-        );
+        fetchMock.mockResolvedValue(envelope(payload, 200, { "content-type": "application/json" }));
         const client = new Enkryptify(makeConfig());
 
         const res = await client.proxy.fetch("https://upstream/x");
         expect(res.ok).toBe(true);
-        const json = await res.json();
-        expect(json).toEqual(payload);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual(payload);
     });
 
-    it("preserves upstream status code on 201/204/etc.", async () => {
-        fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    it("preserves upstream status on 201/204/etc.", async () => {
+        fetchMock.mockResolvedValue(envelope(null, 204, {}));
         const client = new Enkryptify(makeConfig());
 
         const res = await client.proxy.fetch("https://upstream/x", { method: "DELETE" });
         expect(res.status).toBe(204);
     });
 
-    it("returns upstream 401 as Response without throwing (critical: distinguish upstream auth from proxy auth)", async () => {
+    it("returns upstream 401 without throwing — distinguishes upstream auth from proxy auth", async () => {
         const body = { cod: 401, message: "Invalid API key" };
-        fetchMock.mockResolvedValue(
-            new Response(JSON.stringify(body), {
-                status: 401,
-                headers: new Headers({ "Content-Type": "application/json" }),
-            }),
-        );
+        fetchMock.mockResolvedValue(envelope(body, 401, { "content-type": "application/json" }));
         const client = new Enkryptify(makeConfig());
 
         const res = await client.proxy.fetch("https://upstream/x");
@@ -384,51 +383,144 @@ describe("client.proxy — response passthrough", () => {
     });
 
     it.each([
-        [400, "Bad Request"],
-        [403, "Forbidden"],
-        [404, "Not Found"],
-        [429, "Too Many Requests"],
-        [500, "Internal Server Error"],
-        [502, "Bad Gateway"],
-        [503, "Service Unavailable"],
-    ])("returns upstream %i as Response without throwing", async (status, statusText) => {
-        fetchMock.mockResolvedValue(new Response(statusText, { status, statusText }));
+        [400, { error: "bad" }],
+        [403, "forbidden"],
+        [404, { message: "not found" }],
+        [500, "boom"],
+        [502, "bad gateway"],
+        [503, "down"],
+    ])("returns upstream %i as Response without throwing", async (upstreamStatus, body) => {
+        fetchMock.mockResolvedValue(envelope(body, upstreamStatus));
         const client = new Enkryptify(makeConfig());
 
         const res = await client.proxy.fetch("https://upstream/x");
         expect(res.ok).toBe(false);
-        expect(res.status).toBe(status);
-        expect(await res.text()).toBe(statusText);
+        expect(res.status).toBe(upstreamStatus);
     });
 
-    it("returns proxy-layer error envelope as Response (caller reads body.error.code)", async () => {
-        // Simulates the Proxy's own error response for missing_authorization /
-        // secrets_unauthorized / invalid_request / etc. — same JSON shape the
-        // Proxy produces today.
-        const body = { error: { code: "secrets_unauthorized", message: "Unauthorized to load secrets" } };
-        fetchMock.mockResolvedValue(
-            new Response(JSON.stringify(body), {
-                status: 401,
-                headers: new Headers({ "Content-Type": "application/json" }),
-            }),
-        );
+    it("forwards upstream string body verbatim with explicit content-type", async () => {
+        fetchMock.mockResolvedValue(envelope("<note>hi</note>", 200, { "content-type": "application/xml" }));
         const client = new Enkryptify(makeConfig());
 
         const res = await client.proxy.fetch("https://upstream/x");
-        expect(res.status).toBe(401);
-        expect(await res.json()).toEqual(body);
+        expect(res.headers.get("content-type")).toBe("application/xml");
+        expect(await res.text()).toBe("<note>hi</note>");
     });
 
-    it("preserves upstream Retry-After header on 429 passthrough", async () => {
-        fetchMock.mockResolvedValue(
-            new Response("rate limited", { status: 429, headers: new Headers({ "Retry-After": "42" }) }),
-        );
+    it("preserves upstream Retry-After header on 429", async () => {
+        fetchMock.mockResolvedValue(envelope("rate limited", 429, { "Retry-After": "42" }));
         const client = new Enkryptify(makeConfig());
 
         const res = await client.proxy.fetch("https://upstream/x");
         expect(res.status).toBe(429);
         expect(res.headers.get("Retry-After")).toBe("42");
     });
+
+    it("strips hop-by-hop headers (content-length, transfer-encoding) from the synthesized Response", async () => {
+        fetchMock.mockResolvedValue(
+            envelope({ ok: true }, 200, {
+                "content-length": "999",
+                "transfer-encoding": "chunked",
+                "x-custom": "keep",
+            }),
+        );
+        const client = new Enkryptify(makeConfig());
+
+        const res = await client.proxy.fetch("https://upstream/x");
+        expect(res.headers.get("transfer-encoding")).toBeNull();
+        expect(res.headers.get("content-length")).toBeNull();
+        expect(res.headers.get("x-custom")).toBe("keep");
+    });
+});
+
+describe("client.proxy — proxy-layer errors map to typed exceptions", () => {
+    // Non-2xx from the proxy itself (auth failed, validation failed, missing
+    // secret, rate limit, etc.) must NOT look like an upstream Response —
+    // surface a typed error so callers can branch on the cause.
+
+    function errorBody(message: string): Response {
+        return new Response(JSON.stringify({ error: message }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+        });
+    }
+
+    it("401 from the proxy throws AuthenticationError", async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: "Invalid token" }), {
+                status: 401,
+                headers: { "content-type": "application/json" },
+            }),
+        );
+        const client = new Enkryptify(makeConfig());
+
+        await expect(client.proxy.fetch("https://upstream/x")).rejects.toBeInstanceOf(AuthenticationError);
+    });
+
+    it("403 from the proxy throws AuthorizationError", async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: "Forbidden" }), {
+                status: 403,
+                headers: { "content-type": "application/json" },
+            }),
+        );
+        const client = new Enkryptify(makeConfig());
+
+        await expect(client.proxy.fetch("https://upstream/x")).rejects.toBeInstanceOf(AuthorizationError);
+    });
+
+    it("400 from the proxy throws ProxyValidationError with the proxy's detail", async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: 'Secret "X" missing' }), {
+                status: 400,
+                headers: { "content-type": "application/json" },
+            }),
+        );
+        const client = new Enkryptify(makeConfig());
+
+        const err = (await client.proxy.fetch("https://upstream/x").catch((e) => e)) as ProxyValidationError;
+        expect(err).toBeInstanceOf(ProxyValidationError);
+        expect(err.detail).toBe('Secret "X" missing');
+    });
+
+    it("429 from the proxy throws RateLimitError with Retry-After", async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: "Slow down" }), {
+                status: 429,
+                headers: { "content-type": "application/json", "Retry-After": "30" },
+            }),
+        );
+        const client = new Enkryptify(makeConfig());
+
+        const err = (await client.proxy.fetch("https://upstream/x").catch((e) => e)) as RateLimitError;
+        expect(err).toBeInstanceOf(RateLimitError);
+        expect(err.retryAfter).toBe(30);
+    });
+
+    it("5xx from the proxy throws ProxyError carrying status and detail", async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: "down" }), {
+                status: 502,
+                headers: { "content-type": "application/json" },
+            }),
+        );
+        const client = new Enkryptify(makeConfig());
+
+        const err = (await client.proxy.fetch("https://upstream/x").catch((e) => e)) as ProxyError;
+        expect(err).toBeInstanceOf(ProxyError);
+        expect(err.status).toBe(502);
+        expect(err.detail).toBe("down");
+    });
+
+    it("HTTP 200 with a non-envelope body throws ProxyError (proxy contract violation)", async () => {
+        fetchMock.mockResolvedValue(new Response(JSON.stringify({ not: "an envelope" }), { status: 200 }));
+        const client = new Enkryptify(makeConfig());
+
+        await expect(client.proxy.fetch("https://upstream/x")).rejects.toBeInstanceOf(ProxyError);
+    });
+
+    // Reference unused helper to silence the linter (kept for future tests).
+    void errorBody;
 });
 
 describe("client.proxy — URL resolution", () => {
@@ -444,32 +536,32 @@ describe("client.proxy — URL resolution", () => {
 
     it("config.proxy.url takes priority over env var", async () => {
         process.env.ENKRYPTIFY_PROXY_URL = "https://env.test.com";
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
 
         const client = new Enkryptify(makeConfig({ proxy: { url: "https://config.test.com" } }));
         await client.proxy.fetch("https://upstream/x");
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://config.test.com");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://config.test.com/ws-1/prj-1/env-1");
     });
 
     it("falls back to ENKRYPTIFY_PROXY_URL env var", async () => {
         process.env.ENKRYPTIFY_PROXY_URL = "https://env.test.com";
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
 
         const client = new Enkryptify(makeConfig({ proxy: undefined }));
         await client.proxy.fetch("https://upstream/x");
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://env.test.com");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://env.test.com/ws-1/prj-1/env-1");
     });
 
     it("falls back to default POC URL when nothing else is set", async () => {
         delete process.env.ENKRYPTIFY_PROXY_URL;
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
 
         const client = new Enkryptify(makeConfig({ proxy: undefined }));
         await client.proxy.fetch("https://upstream/x");
 
-        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.enkryptify.com");
+        expect(fetchMock.mock.calls[0]?.[0]).toBe("https://proxy.enkryptify.com/ws-1/prj-1/env-1");
     });
 });
 
@@ -482,7 +574,7 @@ describe("client.proxy — lifecycle", () => {
     });
 
     it("throws when destroyed between getting proxy and calling fetch", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
         const proxy = client.proxy;
         client.destroy();
@@ -493,7 +585,7 @@ describe("client.proxy — lifecycle", () => {
 
 describe("client.proxy — destructured fetch (axios/ky wiring)", () => {
     it("works when fetch is destructured from proxy", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig());
 
         const { fetch: proxyFetch } = client.proxy;
@@ -526,7 +618,7 @@ describe("proxyOnly mode", () => {
     });
 
     it(".proxy.fetch() still works when proxyOnly=true", async () => {
-        fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
+        fetchMock.mockResolvedValue(okEnvelope());
         const client = new Enkryptify(makeConfig({ proxy: { url: "https://proxy.test.com", proxyOnly: true } }));
 
         await client.proxy.fetch("https://upstream/x");
